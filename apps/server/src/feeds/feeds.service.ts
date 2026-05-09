@@ -103,7 +103,39 @@ export class FeedsService {
   async cleanHtml(source: string) {
     const $ = load(source, { decodeEntities: false });
 
-    const dirtyHtml = $.html($('.rich_media_content'));
+    const richContent = $('.rich_media_content');
+    const richText = richContent.text().replace(/\s+/g, '').trim();
+
+    // 微信图文（短图文 / 沉浸式信息流）和视频文章：rich_media_content 为空
+    // 此时 og:description 里其实有完整正文（图文）或简短描述（视频）
+    // 兜底从 meta 标签 + 图片轮播构造 HTML
+    if (richText.length < 20) {
+      const ogDesc =
+        $('meta[property="og:description"]').attr('content') ||
+        $('meta[name="description"]').attr('content') ||
+        '';
+      const swiperImgs: string[] = [];
+      $(
+        '.img_swiper_area img, [class*="swiper"] img, .wx_row_immersive_stream_wrap img',
+      ).each((_, el) => {
+        const src = $(el).attr('data-src') || $(el).attr('src') || '';
+        if (src && /^https?:\/\/mmbiz\.qpic\.cn/.test(src) && !swiperImgs.includes(src)) {
+          swiperImgs.push(src);
+        }
+      });
+      if (ogDesc || swiperImgs.length > 0) {
+        const paragraphs = ogDesc
+          .split(/\n+/)
+          .map((p) => p.trim())
+          .filter(Boolean)
+          .map((p) => `<p>${p}</p>`)
+          .join('');
+        const imgs = swiperImgs.map((src) => `<p><img src="${src}"/></p>`).join('');
+        return paragraphs + imgs;
+      }
+    }
+
+    const dirtyHtml = $.html(richContent);
 
     const html = dirtyHtml
       .replace(/data-src=/g, 'src=')
