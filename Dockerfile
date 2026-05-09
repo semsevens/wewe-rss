@@ -13,8 +13,9 @@ RUN --mount=type=cache,id=pnpm,target=/pnpm/store pnpm install --frozen-lockfile
 
 RUN pnpm run -r build
 
-RUN pnpm deploy --filter=server --prod /app
-RUN pnpm deploy --filter=server --prod /app-sqlite
+# pnpm@10 的 deploy 默认要求 inject-workspace-packages=true，--legacy 走旧行为
+RUN pnpm deploy --filter=server --prod --legacy /app
+RUN pnpm deploy --filter=server --prod --legacy /app-sqlite
 
 RUN cd /app && pnpm exec prisma generate
 
