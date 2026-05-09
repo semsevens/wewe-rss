@@ -2,7 +2,8 @@ FROM node:20.16.0-alpine AS base
 ENV PNPM_HOME="/pnpm"
 ENV PATH="$PNPM_HOME:$PATH"
 
-RUN npm i -g pnpm
+# pnpm@11+ 需要 Node 22+，pin 在 10 兼容 Node 20
+RUN npm i -g pnpm@10
 
 FROM base AS build
 COPY . /usr/src/app
