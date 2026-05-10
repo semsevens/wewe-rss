@@ -122,19 +122,13 @@ export class FeedsService {
       });
     }
 
-    // —— 路径 2：图文 / 视频 / 消息。rich_media_content 为空，从其他位置抽正文
-    // 正文来源优先级：JsDecode('content_noencode') > og:description
-    //   - "消息" 类型：og 全空，但页面 JS 里有 content_noencode: JsDecode('...完整正文...')
-    //   - "图文" / "视频"：og:description 含正文 / 描述
-    const jsDecodeMatch = source.match(
-      /content_noencode:\s*JsDecode\('([\s\S]*?)'\)/,
-    );
-    const rawText =
-      (jsDecodeMatch && jsDecodeMatch[1]) ||
-      $('meta[property="og:description"]').attr('content') ||
-      $('meta[name="description"]').attr('content') ||
-      '';
-    // 微信对正文做了 JS 风格 \xNN 转义 + HTML entity 编码（可能双重）
+    // —— 路径 2：图文 / 视频 / 消息。rich_media_content 为空
+    // 正文来源（优先级）：JsDecode('content_noencode') > og:description
+    //   - "消息"：og 全空，正文在页面 JS 的 content_noencode: JsDecode('...')
+    //   - "图文"/"视频"：og:description 含正文 / 描述
+    // 图片来源：DOM swiper imgs + JS 数组 pic_cdn_url_back_up_info_list + 视频号封面
+
+    // 微信用 JS 风格 \xNN 转义 + HTML entity 编码（可能双重 entity）
     const decodeHtml = (s: string) =>
       s
         .replace(/&amp;/g, '&')
@@ -143,24 +137,49 @@ export class FeedsService {
         .replace(/&quot;/g, '"')
         .replace(/&#39;/g, "'")
         .replace(/&nbsp;/g, ' ');
-    const text = decodeHtml(
+    const decodeWx = (s: string) =>
       decodeHtml(
-        rawText.replace(/\\x([0-9a-fA-F]{2})/g, (_, hex) =>
-          String.fromCharCode(parseInt(hex, 16)),
+        decodeHtml(
+          s.replace(/\\x([0-9a-fA-F]{2})/g, (_, hex) =>
+            String.fromCharCode(parseInt(hex, 16)),
+          ),
         ),
-      ),
-    );
+      );
 
-    // 收集 swiper 图（图文类型）
-    const imgs: string[] = [];
+    const jsDecodeText =
+      source.match(/content_noencode:\s*JsDecode\('([\s\S]*?)'\)/)?.[1] || '';
+    const ogDesc =
+      $('meta[property="og:description"]').attr('content') ||
+      $('meta[name="description"]').attr('content') ||
+      '';
+    const text = decodeWx(jsDecodeText || ogDesc);
+
+    // 收集图片：1) DOM swiper / 2) JS 图文数组 / 3) 视频号封面
+    const imgSet = new Set<string>();
     $(
       '.img_swiper_area img, [class*="swiper"] img, .wx_row_immersive_stream_wrap img',
     ).each((_, el) => {
       const src = $(el).attr('data-src') || $(el).attr('src') || '';
-      if (src && /^https?:\/\/mmbiz\.qpic\.cn/.test(src) && !imgs.includes(src)) {
-        imgs.push(src);
-      }
+      if (src && /^https?:\/\//.test(src)) imgSet.add(src);
     });
+    // 图文：picture_page_info_list 数组里每个元素 { cdn_url, width, height, ..., watermark_info: { cdn_url } }
+    // 用 cdn_url 后紧跟 width 定位"原图"（watermark_info 内的 cdn_url 后跟 crop_info，没 width）
+    const imgListRe =
+      /cdn_url:\s*JsDecode\('([^']+)'\)\s*,\s*width/g;
+    let m: RegExpExecArray | null;
+    while ((m = imgListRe.exec(source)) !== null) {
+      const u = decodeWx(m[1]);
+      if (u && /^https?:\/\//.test(u)) imgSet.add(u);
+    }
+    // 视频号视频：finder_video_info.cover_url
+    const finderCoverMatch = source.match(
+      /finder_video_info:\s*\{[\s\S]*?cover_url:\s*JsDecode\('([^']+)'\)/,
+    );
+    if (finderCoverMatch) {
+      const cover = decodeWx(finderCoverMatch[1]);
+      if (cover) imgSet.add(cover);
+    }
+    const imgs = Array.from(imgSet);
 
     if (!text && imgs.length === 0) return '';
 
