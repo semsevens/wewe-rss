@@ -103,6 +103,18 @@ export class FeedsService {
   async cleanHtml(source: string) {
     const $ = load(source, { decodeEntities: false });
 
+    // 提取微信文章类型（item_show_type）：0=article 5=video 8=image-text 10=message
+    // 注入为 HTML 注释，下游 wechat-export.mjs 读取后写入 frontmatter
+    const typeId = source.match(/item_show_type\s*[:=]\s*['"]?(\d+)/)?.[1];
+    const typeMap: Record<string, string> = {
+      '0': 'article',
+      '5': 'video',
+      '8': 'image-text',
+      '10': 'message',
+    };
+    const type = typeId ? typeMap[typeId] || `unknown-${typeId}` : 'unknown';
+    const typeMarker = `<!-- wechat_type: ${type} -->`;
+
     const richContent = $('.rich_media_content');
     const richText = richContent.text().replace(/\s+/g, '').trim();
 
@@ -116,10 +128,13 @@ export class FeedsService {
       const content =
         '<style> .rich_media_content {overflow: hidden;color: #222;font-size: 17px;word-wrap: break-word;-webkit-hyphens: auto;-ms-hyphens: auto;hyphens: auto;text-align: justify;position: relative;z-index: 0;}.rich_media_content {font-size: 18px;}</style>' +
         html;
-      return minify(content, {
-        removeAttributeQuotes: true,
-        collapseWhitespace: true,
-      });
+      return (
+        typeMarker +
+        minify(content, {
+          removeAttributeQuotes: true,
+          collapseWhitespace: true,
+        })
+      );
     }
 
     // —— 路径 2：图文 / 视频 / 消息。rich_media_content 为空
@@ -181,7 +196,7 @@ export class FeedsService {
     }
     const imgs = Array.from(imgSet);
 
-    if (!text && imgs.length === 0) return '';
+    if (!text && imgs.length === 0) return typeMarker;
 
     const paragraphs = text
       .split(/\n+/)
@@ -190,7 +205,7 @@ export class FeedsService {
       .map((p) => `<p>${p}</p>`)
       .join('');
     const imgsHtml = imgs.map((src) => `<p><img src="${src}"/></p>`).join('');
-    return paragraphs + imgsHtml;
+    return typeMarker + paragraphs + imgsHtml;
   }
 
   async getHtmlByUrl(url: string) {
