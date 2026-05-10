@@ -106,52 +106,72 @@ export class FeedsService {
     const richContent = $('.rich_media_content');
     const richText = richContent.text().replace(/\s+/g, '').trim();
 
-    // 微信图文（短图文 / 沉浸式信息流）和视频文章：rich_media_content 为空
-    // 此时 og:description 里其实有完整正文（图文）或简短描述（视频）
-    // 兜底从 meta 标签 + 图片轮播构造 HTML
-    if (richText.length < 20) {
-      const ogDesc =
-        $('meta[property="og:description"]').attr('content') ||
-        $('meta[name="description"]').attr('content') ||
-        '';
-      const swiperImgs: string[] = [];
-      $(
-        '.img_swiper_area img, [class*="swiper"] img, .wx_row_immersive_stream_wrap img',
-      ).each((_, el) => {
-        const src = $(el).attr('data-src') || $(el).attr('src') || '';
-        if (src && /^https?:\/\/mmbiz\.qpic\.cn/.test(src) && !swiperImgs.includes(src)) {
-          swiperImgs.push(src);
-        }
+    // —— 路径 1：普通公众号长文。rich_media_content 有内容，保留 HTML 结构（H1/H2/strong 等）
+    if (richText.length >= 20) {
+      const dirtyHtml = $.html(richContent);
+      const html = dirtyHtml
+        .replace(/data-src=/g, 'src=')
+        .replace(/opacity: 0( !important)?;/g, '')
+        .replace(/visibility: hidden;/g, '');
+      const content =
+        '<style> .rich_media_content {overflow: hidden;color: #222;font-size: 17px;word-wrap: break-word;-webkit-hyphens: auto;-ms-hyphens: auto;hyphens: auto;text-align: justify;position: relative;z-index: 0;}.rich_media_content {font-size: 18px;}</style>' +
+        html;
+      return minify(content, {
+        removeAttributeQuotes: true,
+        collapseWhitespace: true,
       });
-      if (ogDesc || swiperImgs.length > 0) {
-        const paragraphs = ogDesc
-          .split(/\n+/)
-          .map((p) => p.trim())
-          .filter(Boolean)
-          .map((p) => `<p>${p}</p>`)
-          .join('');
-        const imgs = swiperImgs.map((src) => `<p><img src="${src}"/></p>`).join('');
-        return paragraphs + imgs;
-      }
     }
 
-    const dirtyHtml = $.html(richContent);
+    // —— 路径 2：图文 / 视频 / 消息。rich_media_content 为空，从其他位置抽正文
+    // 正文来源优先级：JsDecode('content_noencode') > og:description
+    //   - "消息" 类型：og 全空，但页面 JS 里有 content_noencode: JsDecode('...完整正文...')
+    //   - "图文" / "视频"：og:description 含正文 / 描述
+    const jsDecodeMatch = source.match(
+      /content_noencode:\s*JsDecode\('([\s\S]*?)'\)/,
+    );
+    const rawText =
+      (jsDecodeMatch && jsDecodeMatch[1]) ||
+      $('meta[property="og:description"]').attr('content') ||
+      $('meta[name="description"]').attr('content') ||
+      '';
+    // 微信对正文做了 JS 风格 \xNN 转义 + HTML entity 编码（可能双重）
+    const decodeHtml = (s: string) =>
+      s
+        .replace(/&amp;/g, '&')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&quot;/g, '"')
+        .replace(/&#39;/g, "'")
+        .replace(/&nbsp;/g, ' ');
+    const text = decodeHtml(
+      decodeHtml(
+        rawText.replace(/\\x([0-9a-fA-F]{2})/g, (_, hex) =>
+          String.fromCharCode(parseInt(hex, 16)),
+        ),
+      ),
+    );
 
-    const html = dirtyHtml
-      .replace(/data-src=/g, 'src=')
-      .replace(/opacity: 0( !important)?;/g, '')
-      .replace(/visibility: hidden;/g, '');
-
-    const content =
-      '<style> .rich_media_content {overflow: hidden;color: #222;font-size: 17px;word-wrap: break-word;-webkit-hyphens: auto;-ms-hyphens: auto;hyphens: auto;text-align: justify;position: relative;z-index: 0;}.rich_media_content {font-size: 18px;}</style>' +
-      html;
-
-    const result = minify(content, {
-      removeAttributeQuotes: true,
-      collapseWhitespace: true,
+    // 收集 swiper 图（图文类型）
+    const imgs: string[] = [];
+    $(
+      '.img_swiper_area img, [class*="swiper"] img, .wx_row_immersive_stream_wrap img',
+    ).each((_, el) => {
+      const src = $(el).attr('data-src') || $(el).attr('src') || '';
+      if (src && /^https?:\/\/mmbiz\.qpic\.cn/.test(src) && !imgs.includes(src)) {
+        imgs.push(src);
+      }
     });
 
-    return result;
+    if (!text && imgs.length === 0) return '';
+
+    const paragraphs = text
+      .split(/\n+/)
+      .map((p) => p.trim())
+      .filter(Boolean)
+      .map((p) => `<p>${p}</p>`)
+      .join('');
+    const imgsHtml = imgs.map((src) => `<p><img src="${src}"/></p>`).join('');
+    return paragraphs + imgsHtml;
   }
 
   async getHtmlByUrl(url: string) {
